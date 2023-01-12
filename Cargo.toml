@@ -13,3 +13,6 @@ directories = "4.0"
 toml = "0.5"
 notify = "5.0"
 once_cell = "1"
+
+[build-dependencies]
+embed-resource = "1.8"

@@ -4,7 +4,7 @@ extern crate native_windows_gui as nwg;
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::mpsc, time::Duration};
 
 use directories::ProjectDirs;
-use notify::{RecommendedWatcher, Watcher};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use nwd::NwgUi;
 use nwg::{AnimationTimer, NativeUi};
 use once_cell::sync::OnceCell;
@@ -18,9 +18,9 @@ pub struct Settings {
 }
 
 #[derive(Default, NwgUi)]
-pub struct BasicApp {
+pub struct RunnyNose {
     #[nwg_control(size: (600, 400), position: (300, 300), title: "Runny Nose - WoWs build sniffer", flags: "WINDOW|VISIBLE")]
-    #[nwg_events( OnInit: [BasicApp::on_init], OnWindowClose: [BasicApp::say_goodbye], OnTimerTick: [BasicApp::on_timer_tick] )]
+    #[nwg_events( OnInit: [RunnyNose::on_init], OnWindowClose: [RunnyNose::say_goodbye] )]
     window: nwg::Window,
 
     #[nwg_layout(parent: window, spacing: 1)]
@@ -36,7 +36,7 @@ pub struct BasicApp {
 
     #[nwg_control(text: "...")]
     #[nwg_layout_item(layout: grid, col: 3, row: 0)]
-    #[nwg_events( OnButtonClick: [BasicApp::select_replay_path] )]
+    #[nwg_events( OnButtonClick: [RunnyNose::select_replay_path] )]
     replays_path_button: nwg::Button,
 
     #[nwg_control(ex_flags: ListViewExFlags::GRID | ListViewExFlags::FULL_ROW_SELECT, list_style: ListViewStyle::Detailed)]
@@ -52,15 +52,35 @@ pub struct BasicApp {
 
     recv_events: RefCell<Option<mpsc::Receiver<Result<notify::Event, notify::Error>>>>,
 
-    #[nwg_control(interval: Duration::from_secs(1))]
+    #[nwg_control(interval: Duration::from_secs(1), active: true)]
+    #[nwg_events(OnTimerTick: [RunnyNose::on_timer_tick])]
     timer: AnimationTimer,
 }
 
-impl BasicApp {
+impl RunnyNose {
     fn say_hello(&self) {}
 
     fn on_timer_tick(&self) {
-        println!("timer!");
+        if let Some(recv) = &*self.recv_events.borrow() {
+            if let Ok(res) = recv.try_recv() {
+                println!("{:?}", res);
+                match res {
+                    Ok(evt) => match evt.kind {
+                        notify::EventKind::Create(_) => {
+                            for path in &evt.paths {
+                                if let Some(extension) = path.extension() {
+                                    if extension == "wowsreplay" {
+                                        self.parse_replay(path);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
+                    Err(_) => todo!(),
+                }
+            }
+        }
     }
 
     fn say_goodbye(&self) {
@@ -70,14 +90,17 @@ impl BasicApp {
     fn on_init(self: &Rc<Self>) {
         let (tx, rx) = mpsc::channel();
         *self.recv_events.borrow_mut() = Some(rx);
-        WATCHER
-            .set(notify::recommended_watcher(tx).expect("failed to create watcher"))
-            .expect("failed to set watcher");
+        let mut watcher = notify::recommended_watcher(tx).expect("failed to create watcher");
 
         let settings = load_settings();
         if let Some(path) = &settings.replays_path {
-            self.replays_path_textbox.set_text(path.to_str().unwrap())
+            self.replays_path_textbox.set_text(path.to_str().unwrap());
+            watcher
+                .watch(path, RecursiveMode::NonRecursive)
+                .expect("failed to watch directory");
         }
+
+        WATCHER.set(watcher).expect("failed to set watcher");
 
         *self.settings.borrow_mut() = settings;
 
@@ -98,7 +121,9 @@ impl BasicApp {
                 let mut fs_watcher = self.filesystem_watcher.borrow_mut();
                 if let Some(watcher) = fs_watcher.as_mut() {
                     if let Some(replays_path) = &self.settings.borrow().replays_path {
-                        watcher.unwatch(replays_path);
+                        watcher
+                            .unwatch(replays_path)
+                            .expect("failed to unwatch directory");
                     }
                 }
                 let path = PathBuf::from(path);
@@ -163,6 +188,6 @@ fn main() {
     nwg::init().expect("Failed to init Native Windows GUI");
     nwg::Font::set_global_family("Segoe UI").expect("Failed to set default font");
     let ui = Default::default();
-    let _app = BasicApp::build_ui(ui).expect("Failed to build UI");
+    let _app = RunnyNose::build_ui(ui).expect("Failed to build UI");
     nwg::dispatch_thread_events();
 }
